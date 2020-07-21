@@ -5,6 +5,9 @@ import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
 import androidx.fragment.app.FragmentPagerAdapter;
 
+import com.ams.attendance_tracker.fragments.Camera2Fragment;
+import com.ams.attendance_tracker.fragments.DashBoardFragment;
+
 public  class ViewPageAdapter extends FragmentPagerAdapter {
 
     public ViewPageAdapter(@NonNull FragmentManager fm, int behavior) {
@@ -32,11 +35,11 @@ public  class ViewPageAdapter extends FragmentPagerAdapter {
                     }
 
                      */
-                //return Camera2Fragment.newInstance();
+                return Camera2Fragment.newInstance();
 
             case 1:
                 // return Dashboard fragment
-                //return DashBoardFragment.newInstance();
+                return DashBoardFragment.newInstance();
         }
         return null;
     }
