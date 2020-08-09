@@ -1,13 +1,22 @@
 package com.ams.attendance_tracker.fragments;
 
 import android.Manifest;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
+import android.graphics.ImageFormat;
+import android.graphics.Point;
 import android.graphics.SurfaceTexture;
+import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
+import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
+import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
+import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.ImageReader;
 import android.media.MediaRecorder;
 import android.os.Build;
@@ -24,6 +33,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.Chronometer;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
@@ -37,8 +47,10 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.Semaphore;
@@ -435,6 +447,156 @@ public class Camera2Fragment extends Fragment implements View.OnClickListener, A
             }
         }
         return false;
+    }
+
+    private void requestVideoPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (shouldShowRequestPermissionRationale()) {
+                Toast.makeText(getActivity(),
+                        "Video app required access to camera", Toast.LENGTH_SHORT).show();
+            } else {
+                requestPermissions(VIDEO_PERMISSIONS, REQUEST_VIDEO_PERMISSIONS);
+            }
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
+        Log.d(TAG, "onRequestPermissionsResult");
+        if (requestCode == REQUEST_VIDEO_PERMISSIONS) {
+            if (grantResults.length == VIDEO_PERMISSIONS.length) {
+                for (int result : grantResults) {
+                    if (result != PackageManager.PERMISSION_GRANTED) {
+                        Toast.makeText(getContext(),
+                                result + "::"+PackageManager.PERMISSION_GRANTED, Toast.LENGTH_SHORT).show();
+                        break;
+                    }
+                }
+            } else {
+                Toast.makeText(getContext(),
+                        "Video app required access to camera", Toast.LENGTH_SHORT).show();
+            }
+        } else {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        }
+    }
+
+    private boolean hasPermissionsGranted() {
+        for (String permission : Camera2Fragment.VIDEO_PERMISSIONS) {
+            if (ActivityCompat.checkSelfPermission(Objects.requireNonNull(getContext()), permission)
+                    != PackageManager.PERMISSION_GRANTED) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void setUpCameraOutputs(int width, int height) {
+        CameraManager manager = (CameraManager) Objects.requireNonNull(getActivity()).getSystemService(Context.CAMERA_SERVICE);
+        try {
+            for (String cameraId : manager.getCameraIdList()) {
+                CameraCharacteristics characteristics
+                        = manager.getCameraCharacteristics(cameraId);
+
+                // We don't use a front facing camera in this sample.
+                Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
+                if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
+                    continue;
+                }
+
+                StreamConfigurationMap map = characteristics.get(
+                        CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if (map == null) {
+                    continue;
+                }
+
+                // For still image captures, we use the largest available size.
+                Size largest = Collections.max(
+                        Arrays.asList(map.getOutputSizes(ImageFormat.JPEG)),
+                        new CompareSizesByArea());
+                mImageReader = ImageReader.newInstance(largest.getWidth(), largest.getHeight(),
+                        ImageFormat.JPEG, /*maxImages*/2);
+                mImageReader.setOnImageAvailableListener(
+                        mOnImageAvailableListener, mBackgroundHandler);
+
+                // Find out if we need to swap dimension to get the preview size relative to sensor
+                // coordinate.
+                int displayRotation = getActivity().getWindowManager().getDefaultDisplay().getRotation();
+                //noinspection ConstantConditions
+                mSensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
+                boolean swappedDimensions = false;
+                switch (displayRotation) {
+                    case Surface.ROTATION_0:
+                    case Surface.ROTATION_180:
+                        if (mSensorOrientation == 90 || mSensorOrientation == 270) {
+                            swappedDimensions = true;
+                        }
+                        break;
+                    case Surface.ROTATION_90:
+                    case Surface.ROTATION_270:
+                        if (mSensorOrientation == 0 || mSensorOrientation == 180) {
+                            swappedDimensions = true;
+                        }
+                        break;
+                    default:
+                        Log.e(TAG, "Display rotation is invalid: " + displayRotation);
+                }
+
+                Point displaySize = new Point();
+                getActivity().getWindowManager().getDefaultDisplay().getSize(displaySize);
+                int rotatedPreviewWidth = width;
+                int rotatedPreviewHeight = height;
+                int maxPreviewWidth = displaySize.x;
+                int maxPreviewHeight = displaySize.y;
+
+                if (swappedDimensions) {
+                    rotatedPreviewWidth = height;
+                    rotatedPreviewHeight = width;
+                    maxPreviewWidth = displaySize.y;
+                    maxPreviewHeight = displaySize.x;
+                }
+
+                if (maxPreviewWidth > MAX_PREVIEW_WIDTH) {
+                    maxPreviewWidth = MAX_PREVIEW_WIDTH;
+                }
+
+                if (maxPreviewHeight > MAX_PREVIEW_HEIGHT) {
+                    maxPreviewHeight = MAX_PREVIEW_HEIGHT;
+                }
+
+
+                mPreviewSize = chooseOptimalSize(map.getOutputSizes(SurfaceTexture.class),
+                        rotatedPreviewWidth, rotatedPreviewHeight, maxPreviewWidth,
+                        maxPreviewHeight, largest);
+                mVideoSize = chooseVideoSize(map.getOutputSizes(MediaRecorder.class));
+
+
+                // We fit the aspect ratio of TextureView to the size of preview we picked.
+                int orientation = getResources().getConfiguration().orientation;
+                if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
+                    mTextureView.setAspectRatio(
+                            mPreviewSize.getWidth(), mPreviewSize.getHeight());
+                } else {
+                    mTextureView.setAspectRatio(
+                            mPreviewSize.getHeight(), mPreviewSize.getWidth());
+                }
+
+                // Check if the flash is supported.
+                Boolean available = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                mFlashSupported = available == null ? false : available;
+
+                mCameraId = cameraId;
+                return;
+            }
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        } catch (NullPointerException e) {
+            // Currently an NPE is thrown when the Camera2API is used but not supported on the
+            // device this code runs.
+            Toast.makeText(getActivity(),
+                    "Camera2 API is not supported on your device.", Toast.LENGTH_SHORT).show();
+        }
     }
 
 
